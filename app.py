@@ -7,7 +7,6 @@ from pathlib import Path
 from document_processor.file_handler import DocumentProcessor
 from retriever.builder import RetrieverBuilder
 from agents.workflow import AgentWorkflow
-from config import constants
 from utils.logging import logger
 
 # ---------------------------
@@ -23,7 +22,7 @@ def initialize_components():
 # ---------------------------
 # File hashing
 # ---------------------------
-def _get_file_hashes(uploaded_files: List[str]) -> frozenset:
+def _get_file_hashes(uploaded_files: List[Path]) -> frozenset:
     """Generate SHA-256 hashes for uploaded files."""
     hashes = set()
     for file_path in uploaded_files:
@@ -55,8 +54,8 @@ def main():
         st.session_state.workflow = workflow
         st.session_state.file_hashes = frozenset()
         st.session_state.retriever = None
-        st.session_state.uploaded_files = []
-        st.session_state.chat_history = []  # list of {"question": str, "answer": str, "verification": str}
+        st.session_state.uploaded_files: List[Path] = []
+        st.session_state.chat_history: List[dict] = []  # {"question":..., "answer":..., "verification":...}
 
     # ---------------------------
     # Sidebar: Files, Examples, Info
@@ -74,9 +73,8 @@ def main():
         if uploaded_files:
             temp_files = []
             for uploaded_file in uploaded_files:
-                temp_path = f"temp_{uploaded_file.name}"
-                with open(temp_path, "wb") as f:
-                    f.write(uploaded_file.getbuffer())
+                temp_path = Path(f"temp_{uploaded_file.name}")
+                temp_path.write_bytes(uploaded_file.getbuffer())
                 temp_files.append(temp_path)
             st.session_state.uploaded_files = temp_files
             st.success(f"✅ Uploaded {len(uploaded_files)} file(s)")
@@ -103,12 +101,12 @@ def main():
             st.session_state.question_example = ex_data["question"]
 
             valid_files = []
-            for path in ex_data["file_paths"]:
-                if os.path.exists(path):
+            for path_str in ex_data["file_paths"]:
+                path = Path(path_str)
+                if path.exists():
                     valid_files.append(path)
                 else:
                     st.warning(f"Example file not found: {path}")
-
             if valid_files:
                 st.session_state.uploaded_files = valid_files
                 st.success(f"Loaded example: {example_choice}")
@@ -124,11 +122,11 @@ def main():
         """)
 
         # ---------------------------
-        # Sidebar: Answers + Verification
+        # Sidebar: Chat History & Verification
         # ---------------------------
         st.markdown("---")
         st.markdown("## 🐥 Chat History & Verification")
-        for idx, chat in enumerate(reversed(st.session_state.chat_history)):
+        for chat in reversed(st.session_state.chat_history):
             st.markdown(f"**Q:** {chat['question']}")
             st.markdown(f"<div style='background-color:#d4edda;padding:8px;border-radius:5px;'>{chat['answer']}</div>", unsafe_allow_html=True)
             st.markdown(f"<div style='background-color:#f0f2f6;padding:5px;border-radius:5px;color:#555;'>{chat['verification']}</div>", unsafe_allow_html=True)
@@ -156,7 +154,7 @@ def main():
 
     question = st.text_area(
         "Enter your question here...",
-        height=100,
+        height=120,
         value=st.session_state.get("question_example", "")
     )
 
@@ -171,7 +169,6 @@ def main():
                     # Check file hashes
                     current_hashes = _get_file_hashes(st.session_state.uploaded_files)
                     if st.session_state.retriever is None or current_hashes != st.session_state.file_hashes:
-                        # Process documents & build retriever
                         chunks = st.session_state.processor.process(st.session_state.uploaded_files)
                         retriever = st.session_state.retriever_builder.build_hybrid_retriever(chunks)
                         st.session_state.retriever = retriever
