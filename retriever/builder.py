@@ -1,9 +1,9 @@
 from langchain_community.vectorstores import Qdrant
 from langchain_community.embeddings import HuggingFaceEmbeddings
-from langchain_community.retrievers import BM25Retriever
-from langchain.retrievers import EnsembleRetriever
+from langchain_community.retrievers import BM25Retriever, EnsembleRetriever
 from qdrant_client import QdrantClient
 from qdrant_client.models import Distance, VectorParams
+
 import logging
 import os
 
