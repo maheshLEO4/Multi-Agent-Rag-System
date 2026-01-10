@@ -20,19 +20,16 @@ class HybridRetriever(BaseRetriever):
     retrievers: List[BaseRetriever]
 
     def _get_relevant_documents(self, query: str, **kwargs) -> List[Document]:
-        """
-        Aggregate results from multiple retrievers.
-
-        Pass **kwargs (like run_manager) to each retriever to avoid errors.
-        """
         docs: List[Document] = []
         seen = set()
 
         for retriever in self.retrievers:
-            if hasattr(retriever, "get_relevant_documents"):
-                results = retriever.get_relevant_documents(query, **kwargs)
+            # Always pass run_manager=None to satisfy keyword-only argument
+            if hasattr(retriever, "_get_relevant_documents"):
+                results = retriever._get_relevant_documents(query, run_manager=None)
             else:
-                results = retriever._get_relevant_documents(query, **kwargs)
+                # Fallback just in case some retriever doesn't have it
+                results = retriever(query)
 
             for doc in results:
                 doc_id = hash(doc.page_content)
@@ -41,6 +38,7 @@ class HybridRetriever(BaseRetriever):
                     docs.append(doc)
 
         return docs
+
 
 
 class RetrieverBuilder:
