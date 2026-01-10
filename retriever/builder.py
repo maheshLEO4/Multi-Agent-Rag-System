@@ -25,7 +25,8 @@ class HybridRetriever(BaseRetriever):
         seen = set()
 
         for retriever in self.retrievers:
-            results = retriever.get_relevant_documents(query)
+            # Updated: call retriever directly instead of get_relevant_documents
+            results = retriever(query)
             for doc in results:
                 doc_id = hash(doc.page_content)
                 if doc_id not in seen:
