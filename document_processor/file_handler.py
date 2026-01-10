@@ -6,7 +6,9 @@ from pathlib import Path
 from typing import List
 
 import pdfplumber
-from langchain.schema import Document
+from langchain_core.documents import Document
+from langchain_text_splitters import MarkdownHeaderTextSplitter
+
 
 from config import constants
 from config.settings import settings
