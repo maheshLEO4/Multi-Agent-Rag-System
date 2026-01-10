@@ -3,7 +3,7 @@ import logging
 import os
 
 from langchain_community.vectorstores import Qdrant
-from langchain_community.embeddings import HuggingFaceEmbeddings
+from langchain_huggingface import HuggingFaceEmbeddings  # Updated import
 from langchain_community.retrievers import BM25Retriever
 from langchain_core.retrievers import BaseRetriever
 from langchain_core.documents import Document
@@ -19,16 +19,20 @@ class HybridRetriever(BaseRetriever):
 
     retrievers: List[BaseRetriever]
 
-    def _get_relevant_documents(self, query: str) -> List[Document]:
+    def _get_relevant_documents(self, query: str, **kwargs) -> List[Document]:
+        """
+        Aggregate results from multiple retrievers.
+
+        Pass **kwargs (like run_manager) to each retriever to avoid errors.
+        """
         docs: List[Document] = []
         seen = set()
 
         for retriever in self.retrievers:
-            # Use get_relevant_documents if exists, else fallback to _get_relevant_documents
             if hasattr(retriever, "get_relevant_documents"):
-                results = retriever.get_relevant_documents(query)
+                results = retriever.get_relevant_documents(query, **kwargs)
             else:
-                results = retriever._get_relevant_documents(query)
+                results = retriever._get_relevant_documents(query, **kwargs)
 
             for doc in results:
                 doc_id = hash(doc.page_content)
@@ -42,7 +46,6 @@ class HybridRetriever(BaseRetriever):
 class RetrieverBuilder:
     def __init__(self):
         """Initialize embeddings and Qdrant client."""
-
         self.embeddings = HuggingFaceEmbeddings(
             model_name="sentence-transformers/all-MiniLM-L6-v2",
             model_kwargs={"device": "cpu"},
@@ -65,15 +68,12 @@ class RetrieverBuilder:
         except Exception:
             self.qdrant_client.create_collection(
                 collection_name=self.collection_name,
-                vectors_config=VectorParams(
-                    size=384, distance=Distance.COSINE
-                ),
+                vectors_config=VectorParams(size=384, distance=Distance.COSINE),
             )
             logger.info("Created Qdrant collection.")
 
     def build_hybrid_retriever(self, docs: List[Document]) -> BaseRetriever:
         """Build hybrid BM25 + vector retriever."""
-
         try:
             vector_store = Qdrant.from_documents(
                 documents=docs,
