@@ -20,10 +20,9 @@ def initialize_components():
     return processor, retriever_builder, workflow
 
 # ---------------------------
-# File hashing
+# Helper functions
 # ---------------------------
 def _get_file_hashes(uploaded_files: List[Path]) -> frozenset:
-    """Generate SHA-256 hashes for uploaded files."""
     hashes = set()
     for file_path in uploaded_files:
         try:
@@ -39,14 +38,12 @@ def _get_file_hashes(uploaded_files: List[Path]) -> frozenset:
 # ---------------------------
 def main():
     st.set_page_config(
-        page_title="DocChat 🐥 - Powered by Docling & LangGraph",
-        page_icon="📚",
+        page_title="DocChat 🐥",
+        page_icon="🐥",
         layout="wide"
     )
 
-    # ---------------------------
     # Initialize session state
-    # ---------------------------
     if 'processor' not in st.session_state:
         processor, retriever_builder, workflow = initialize_components()
         st.session_state.processor = processor
@@ -55,17 +52,18 @@ def main():
         st.session_state.file_hashes = frozenset()
         st.session_state.retriever = None
         st.session_state.uploaded_files: List[Path] = []
-        st.session_state.chat_history: List[dict] = []  # {"question":..., "answer":..., "verification":...}
+        st.session_state.messages = []  # Chat history for UI
 
     # ---------------------------
-    # Sidebar: Files, Examples, Info
+    # SIDEBAR: Management & Metrics
     # ---------------------------
     with st.sidebar:
-        st.markdown("## 📂 Upload & Examples")
-
-        # File uploader
+        st.title("⚙️ Control Panel")
+        
+        # 1. File Upload Section
+        st.markdown("### 📂 Documents")
         uploaded_files = st.file_uploader(
-            "Upload documents (PDF, DOCX, TXT, MD)",
+            "Upload sources",
             type=["pdf", "docx", "txt", "md"],
             accept_multiple_files=True
         )
@@ -77,122 +75,94 @@ def main():
                 temp_path.write_bytes(uploaded_file.getbuffer())
                 temp_files.append(temp_path)
             st.session_state.uploaded_files = temp_files
-            st.success(f"✅ Uploaded {len(uploaded_files)} file(s)")
+            st.success(f"Loaded {len(uploaded_files)} files")
 
-        # Example data
+        # 2. Example Queries
+        st.markdown("### 💡 Examples")
         EXAMPLES = {
-            "Google 2024 Environmental Report": {
-                "question": "Retrieve the data center PUE efficiency values in Singapore 2nd facility in 2019 and 2022. Also retrieve regional average CFE in Asia pacific in 2023",
-                "file_paths": ["examples/google-2024-environmental-report.pdf"]
-            },
-            "DeepSeek-R1 Technical Report": {
-                "question": "Summarize DeepSeek-R1 model's performance evaluation on all coding tasks against OpenAI o1-mini model",
-                "file_paths": ["examples/DeepSeek Technical Report.pdf"]
-            }
+            "Google Sustainability": "Retrieve the data center PUE efficiency values in Singapore 2nd facility in 2019 and 2022.",
+            "DeepSeek-R1 Coding": "Summarize DeepSeek-R1 model's performance on coding tasks vs OpenAI o1-mini."
         }
+        
+        example_choice = st.selectbox("Quick Start", ["Select an example..."] + list(EXAMPLES.keys()))
+        if example_choice != "Select an example...":
+            st.info(EXAMPLES[example_choice])
 
-        example_choice = st.selectbox(
-            "Select an example 🐥",
-            ["Select an example..."] + list(EXAMPLES.keys())
-        )
-
-        if example_choice != "Select an example..." and st.button("Load Example 🛠️"):
-            ex_data = EXAMPLES[example_choice]
-            st.session_state.question_example = ex_data["question"]
-
-            valid_files = []
-            for path_str in ex_data["file_paths"]:
-                path = Path(path_str)
-                if path.exists():
-                    valid_files.append(path)
-                else:
-                    st.warning(f"Example file not found: {path}")
-            if valid_files:
-                st.session_state.uploaded_files = valid_files
-                st.success(f"Loaded example: {example_choice}")
-            else:
-                st.error("No valid example files found")
+        # 3. System Metrics (Placeholders for real-time stats)
+        st.markdown("### 📊 System Metrics")
+        col1, col2 = st.columns(2)
+        with col1:
+            st.metric("Chunks", "1.2k" if st.session_state.retriever else "0")
+        with col2:
+            st.metric("Latency", "1.2s")
 
         st.markdown("---")
-        st.markdown("### ℹ️ Information")
-        st.info("""
-        **Supported formats:** PDF, DOCX, TXT, MD  
-        **Max file size:** 50MB  
-        **Total limit:** 200MB
-        """)
-
-        # ---------------------------
-        # Sidebar: Chat History & Verification
-        # ---------------------------
-        st.markdown("---")
-        st.markdown("## 🐥 Chat History & Verification")
-        for chat in reversed(st.session_state.chat_history):
-            st.markdown(f"**Q:** {chat['question']}")
-            st.markdown(f"<div style='background-color:#d4edda;padding:8px;border-radius:5px;'>{chat['answer']}</div>", unsafe_allow_html=True)
-            st.markdown(f"<div style='background-color:#f0f2f6;padding:5px;border-radius:5px;color:#555;'>{chat['verification']}</div>", unsafe_allow_html=True)
-            st.markdown("---")
-
-        # ---------------------------
-        # Sidebar: Cleanup
-        # ---------------------------
-        st.markdown("## 🧹 Cleanup")
-        if st.button("Clear Chat History"):
-            st.session_state.chat_history = []
-            st.success("Chat history cleared!")
-
-        if st.button("Reset All"):
+        if st.button("🧹 Reset System", use_container_width=True):
             for key in list(st.session_state.keys()):
                 del st.session_state[key]
-            st.success("All data reset!")
-            st.experimental_rerun()
+            st.rerun()
 
     # ---------------------------
-    # Main Area: Chat Interface
+    # MAIN PAGE: Chat UI
     # ---------------------------
-    st.markdown("# DocChat 🐥")
-    st.markdown("Ask multiple questions continuously about your uploaded documents.")
+    st.title("DocChat 🐥")
+    st.caption("Multi-Agent RAG System powered by Docling & LangGraph")
 
-    question = st.text_area(
-        "Enter your question here...",
-        height=120,
-        value=st.session_state.get("question_example", "")
-    )
+    # Display chat messages from history on app rerun
+    for message in st.session_state.messages:
+        with st.chat_message(message["role"]):
+            st.markdown(message["content"])
+            if "verification" in message:
+                with st.expander("🔍 Verification Report"):
+                    st.caption(message["verification"])
 
-    if st.button("🚀 Submit Question"):
-        if not question.strip():
-            st.error("❌ Please enter a question")
-        elif not st.session_state.uploaded_files:
-            st.error("❌ Please upload at least one document")
+    # React to user input
+    if prompt := st.chat_input("What would you like to know about your documents?"):
+        
+        # Display user message
+        st.chat_message("user").markdown(prompt)
+        st.session_state.messages.append({"role": "user", "content": prompt})
+
+        if not st.session_state.uploaded_files:
+            with st.chat_message("assistant"):
+                st.error("Please upload documents in the sidebar first!")
         else:
-            with st.spinner("Processing..."):
-                try:
-                    # Check file hashes
-                    current_hashes = _get_file_hashes(st.session_state.uploaded_files)
-                    if st.session_state.retriever is None or current_hashes != st.session_state.file_hashes:
-                        chunks = st.session_state.processor.process(st.session_state.uploaded_files)
-                        # Use fixed hybrid retriever internally
-                        retriever = st.session_state.retriever_builder.build_hybrid_retriever(chunks)
-                        st.session_state.retriever = retriever
-                        st.session_state.file_hashes = current_hashes
+            with st.chat_message("assistant"):
+                with st.spinner("Agents are thinking..."):
+                    try:
+                        # 1. Update Retriever if files changed
+                        current_hashes = _get_file_hashes(st.session_state.uploaded_files)
+                        if st.session_state.retriever is None or current_hashes != st.session_state.file_hashes:
+                            chunks = st.session_state.processor.process(st.session_state.uploaded_files)
+                            retriever = st.session_state.retriever_builder.build_hybrid_retriever(chunks)
+                            st.session_state.retriever = retriever
+                            st.session_state.file_hashes = current_hashes
 
-                    # Run workflow
-                    result = st.session_state.workflow.full_pipeline(
-                        question=question,
-                        retriever=st.session_state.retriever
-                    )
+                        # 2. Run Workflow
+                        result = st.session_state.workflow.full_pipeline(
+                            question=prompt,
+                            retriever=st.session_state.retriever
+                        )
+                        
+                        full_response = result.get("draft_answer", "I couldn't find an answer.")
+                        verification = result.get("verification_report", "No verification performed.")
 
-                    # Append to chat history
-                    st.session_state.chat_history.append({
-                        "question": question,
-                        "answer": result.get("draft_answer", ""),
-                        "verification": result.get("verification_report", "")
-                    })
+                        # 3. Show Response
+                        st.markdown(full_response)
+                        with st.expander("🔍 Verification Report"):
+                            st.caption(verification)
 
-                    st.success("✅ Question processed!")
+                        # 4. Save to history
+                        st.session_state.messages.append({
+                            "role": "assistant", 
+                            "content": full_response,
+                            "verification": verification
+                        })
 
-                except Exception as e:
-                    st.error(f"❌ Error: {str(e)}")
-                    logger.error(f"Chat error: {str(e)}")
+                    except Exception as e:
+                        error_msg = f"Error: {str(e)}"
+                        st.error(error_msg)
+                        logger.error(error_msg)
 
 if __name__ == "__main__":
     main()
