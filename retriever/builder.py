@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 
 
 class HybridRetriever(BaseRetriever):
-    """Simple hybrid retriever combining multiple retrievers."""
+    """Hybrid retriever combining multiple retrievers safely."""
 
     retrievers: List[BaseRetriever]
 
@@ -24,8 +24,12 @@ class HybridRetriever(BaseRetriever):
         seen = set()
 
         for retriever in self.retrievers:
-            # Correct usage: call get_relevant_documents instead of calling retriever directly
-            results = retriever.get_relevant_documents(query)
+            # Use get_relevant_documents if exists, else fallback to _get_relevant_documents
+            if hasattr(retriever, "get_relevant_documents"):
+                results = retriever.get_relevant_documents(query)
+            else:
+                results = retriever._get_relevant_documents(query)
+
             for doc in results:
                 doc_id = hash(doc.page_content)
                 if doc_id not in seen:
