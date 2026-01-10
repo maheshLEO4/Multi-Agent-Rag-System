@@ -18,3 +18,4 @@ protobuf<5
 pdfplumber>=0.10.3
 rank_bm25>=0.0.12
 markdown>=3.4.4
+langchain-huggingface
