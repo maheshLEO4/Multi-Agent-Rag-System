@@ -2,8 +2,8 @@ from typing import List
 import logging
 import os
 
+from langchain_huggingface import HuggingFaceEmbeddings  # updated import
 from langchain_community.vectorstores import Qdrant
-from langchain_huggingface import HuggingFaceEmbeddings  # Updated import
 from langchain_community.retrievers import BM25Retriever
 from langchain_core.retrievers import BaseRetriever
 from langchain_core.documents import Document
@@ -12,6 +12,7 @@ from qdrant_client import QdrantClient
 from qdrant_client.models import Distance, VectorParams
 
 logger = logging.getLogger(__name__)
+
 
 class HybridRetriever(BaseRetriever):
     """Hybrid retriever combining multiple retrievers safely."""
@@ -23,13 +24,14 @@ class HybridRetriever(BaseRetriever):
         seen = set()
 
         for retriever in self.retrievers:
-            # Always pass run_manager=None for keyword-only argument
-            if hasattr(retriever, "_get_relevant_documents"):
+            # Call BM25Retriever correctly with run_manager
+            if isinstance(retriever, BM25Retriever):
                 results = retriever._get_relevant_documents(query, run_manager=None)
+            elif hasattr(retriever, "_get_relevant_documents"):
+                results = retriever._get_relevant_documents(query, **kwargs)
             elif hasattr(retriever, "get_relevant_documents"):
                 results = retriever.get_relevant_documents(query)
             else:
-                # Fallback for any callable retriever
                 results = retriever(query)
 
             for doc in results:
@@ -41,11 +43,10 @@ class HybridRetriever(BaseRetriever):
         return docs
 
 
-
-
 class RetrieverBuilder:
     def __init__(self):
         """Initialize embeddings and Qdrant client."""
+
         self.embeddings = HuggingFaceEmbeddings(
             model_name="sentence-transformers/all-MiniLM-L6-v2",
             model_kwargs={"device": "cpu"},
@@ -74,6 +75,7 @@ class RetrieverBuilder:
 
     def build_hybrid_retriever(self, docs: List[Document]) -> BaseRetriever:
         """Build hybrid BM25 + vector retriever."""
+
         try:
             vector_store = Qdrant.from_documents(
                 documents=docs,
