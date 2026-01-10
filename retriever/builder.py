@@ -13,7 +13,6 @@ from qdrant_client.models import Distance, VectorParams
 
 logger = logging.getLogger(__name__)
 
-
 class HybridRetriever(BaseRetriever):
     """Hybrid retriever combining multiple retrievers safely."""
 
@@ -24,11 +23,13 @@ class HybridRetriever(BaseRetriever):
         seen = set()
 
         for retriever in self.retrievers:
-            # Always pass run_manager=None to satisfy keyword-only argument
+            # Always pass run_manager=None for keyword-only argument
             if hasattr(retriever, "_get_relevant_documents"):
                 results = retriever._get_relevant_documents(query, run_manager=None)
+            elif hasattr(retriever, "get_relevant_documents"):
+                results = retriever.get_relevant_documents(query)
             else:
-                # Fallback just in case some retriever doesn't have it
+                # Fallback for any callable retriever
                 results = retriever(query)
 
             for doc in results:
@@ -38,6 +39,7 @@ class HybridRetriever(BaseRetriever):
                     docs.append(doc)
 
         return docs
+
 
 
 
