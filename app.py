@@ -170,6 +170,7 @@ def main():
                     current_hashes = _get_file_hashes(st.session_state.uploaded_files)
                     if st.session_state.retriever is None or current_hashes != st.session_state.file_hashes:
                         chunks = st.session_state.processor.process(st.session_state.uploaded_files)
+                        # Use fixed hybrid retriever internally
                         retriever = st.session_state.retriever_builder.build_hybrid_retriever(chunks)
                         st.session_state.retriever = retriever
                         st.session_state.file_hashes = current_hashes
