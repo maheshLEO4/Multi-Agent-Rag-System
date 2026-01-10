@@ -26,12 +26,13 @@ class HybridRetriever(BaseRetriever):
         seen = set()
 
         for retriever in self.retrievers:
-            # Using .invoke() is the standard way to call any retriever.
-            # It automatically handles the run_manager and internal logic.
-            results = retriever.invoke(query, config={"callbacks": run_manager.get_child() if run_manager else None})
+            # Pass the child run manager to maintain tracing
+            results = retriever.invoke(
+                query, 
+                config={"callbacks": run_manager.get_child() if run_manager else None}
+            )
 
             for doc in results:
-                # Use page_content hash to avoid duplicates from different retrievers
                 doc_id = hash(doc.page_content)
                 if doc_id not in seen:
                     seen.add(doc_id)
@@ -42,16 +43,19 @@ class HybridRetriever(BaseRetriever):
 class RetrieverBuilder:
     def __init__(self):
         """Initialize embeddings and Qdrant client."""
-
         self.embeddings = HuggingFaceEmbeddings(
             model_name="sentence-transformers/all-MiniLM-L6-v2",
             model_kwargs={"device": "cpu"},
             encode_kwargs={"normalize_embeddings": True},
         )
 
+        # Initialize the client once
+        self.url = os.getenv("QDRANT_URL", "http://localhost:6333")
+        self.api_key = os.getenv("QDRANT_API_KEY")
+        
         self.qdrant_client = QdrantClient(
-            url=os.getenv("QDRANT_URL", "http://localhost:6333"),
-            api_key=os.getenv("QDRANT_API_KEY"),
+            url=self.url,
+            api_key=self.api_key,
         )
 
         self.collection_name = "docchat_documents"
@@ -71,16 +75,17 @@ class RetrieverBuilder:
 
     def build_hybrid_retriever(self, docs: List[Document]) -> BaseRetriever:
         """Build hybrid BM25 + vector retriever."""
-
         try:
-            vector_store = Qdrant.from_documents(
-                documents=docs,
-                embedding=self.embeddings,
-                url=os.getenv("QDRANT_URL", "http://localhost:6333"),
-                api_key=os.getenv("QDRANT_API_KEY"),
+            # FIX: Pass the existing client directly to avoid 'AttributeError' 
+            # and ensure compatibility with the installed qdrant-client version.
+            vector_store = Qdrant(
+                client=self.qdrant_client,
                 collection_name=self.collection_name,
-                force_recreate=False,
+                embeddings=self.embeddings,
             )
+            
+            # Add documents to the existing collection
+            vector_store.add_documents(docs)
 
             bm25 = BM25Retriever.from_documents(docs)
             vector_retriever = vector_store.as_retriever(search_kwargs={"k": 10})
