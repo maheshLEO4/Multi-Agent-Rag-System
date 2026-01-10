@@ -8,7 +8,6 @@ from langchain_community.retrievers import BM25Retriever
 from langchain_core.retrievers import BaseRetriever
 from langchain_core.documents import Document
 
-
 from qdrant_client import QdrantClient
 from qdrant_client.models import Distance, VectorParams
 
@@ -25,8 +24,8 @@ class HybridRetriever(BaseRetriever):
         seen = set()
 
         for retriever in self.retrievers:
-            # Updated: call retriever directly instead of get_relevant_documents
-            results = retriever(query)
+            # Correct usage: call get_relevant_documents instead of calling retriever directly
+            results = retriever.get_relevant_documents(query)
             for doc in results:
                 doc_id = hash(doc.page_content)
                 if doc_id not in seen:
