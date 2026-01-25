@@ -1,154 +1,152 @@
 import os
 import hashlib
+import pickle
+from datetime import datetime, timedelta
 from pathlib import Path
-from typing import List, Generator
+from typing import List
 
 import pdfplumber
 from langchain_core.documents import Document
-from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_huggingface import HuggingFaceEmbeddings
-from langchain_qdrant import QdrantVectorStore
-from qdrant_client import QdrantClient
-from qdrant_client.models import Distance, VectorParams
+from langchain_text_splitters import MarkdownHeaderTextSplitter, RecursiveCharacterTextSplitter
+
 
 from config import constants
 from config.settings import settings
 from utils.logging import logger
 
 
-MAX_MODEL_TOKENS = 6000  # approximate safe token limit for LLM
-
 class DocumentProcessor:
-    def __init__(self, embeddings: HuggingFaceEmbeddings):
-        if embeddings is None:
-            raise ValueError("Embeddings cannot be None when using dense retrieval.")
-        self.embeddings = embeddings
-
+    def __init__(self):
         self.cache_dir = Path(settings.CACHE_DIR)
         self.cache_dir.mkdir(parents=True, exist_ok=True)
 
-        # Setup Qdrant client
-        self.qdrant_client = QdrantClient(
-            url=os.getenv("QDRANT_URL", "http://localhost:6333"),
-            api_key=os.getenv("QDRANT_API_KEY"),
-        )
-
-        self.collection_name = "docchat_documents"
-        self._ensure_collection()
-
-        # Setup vector store
-        self.vector_store = QdrantVectorStore(
-            client=self.qdrant_client,
-            collection_name=self.collection_name,
-            embedding=self.embeddings,
-        )
-
-    # ---------------------- QDRANT COLLECTION ---------------------- #
-    def _ensure_collection(self):
-        try:
-            self.qdrant_client.get_collection(self.collection_name)
-        except Exception:
-            logger.info("Creating Qdrant collection...")
-            self.qdrant_client.create_collection(
-                collection_name=self.collection_name,
-                vectors_config=VectorParams(size=384, distance=Distance.COSINE),
-            )
-
-    # ---------------------- FILE VALIDATION ---------------------- #
-    def validate_files(self, files: List):
+    def validate_files(self, files: List) -> None:
+        """Validate the total size of the uploaded files."""
         total_size = sum(os.path.getsize(f.name) for f in files)
         if total_size > constants.MAX_TOTAL_SIZE:
             raise ValueError(
-                f"Total size exceeds {constants.MAX_TOTAL_SIZE // 1024 // 1024} MB"
+                f"Total size exceeds {constants.MAX_TOTAL_SIZE // 1024 // 1024}MB limit"
             )
 
-    # ---------------------- STREAMING PROCESS ---------------------- #
-    def process(
-        self, files: List, batch_size: int = 32, chunk_size: int = 1200, chunk_overlap: int = 100
-    ):
-        """Process files and stream chunks directly into Qdrant."""
+    def process(self, files: List) -> List:
+        """Process files with caching for subsequent queries"""
         self.validate_files(files)
+
+        all_chunks = []
+        seen_hashes = set()
 
         for file in files:
             try:
-                file_hash = self._file_hash(file.name)
-                logger.info(f"Processing file: {file.name}")
+                # Generate content-based hash for caching
+                with open(file.name, "rb") as f:
+                    file_hash = self._generate_hash(f.read())
 
-                # Stream chunks and add to Qdrant
-                for chunk_batch in self._stream_chunks(file.name, chunk_size, chunk_overlap, batch_size):
-                    self.vector_store.add_documents(chunk_batch)
+                cache_path = self.cache_dir / f"{file_hash}.pkl"
+
+                if self._is_cache_valid(cache_path):
+                    logger.info(f"Loading from cache: {file.name}")
+                    chunks = self._load_from_cache(cache_path)
+                else:
+                    logger.info(f"Processing and caching: {file.name}")
+                    chunks = self._process_file(file)
+
+                    if not chunks:
+                        logger.warning(f"No content extracted from {file.name}")
+                        continue
+
+                    self._save_to_cache(chunks, cache_path)
+
+                # Deduplicate chunks across files
+                for chunk in chunks:
+                    chunk_hash = self._generate_hash(chunk.page_content.encode())
+                    if chunk_hash not in seen_hashes:
+                        all_chunks.append(chunk)
+                        seen_hashes.add(chunk_hash)
 
             except Exception as e:
-                logger.error(f"Failed processing {file.name}: {str(e)}")
+                logger.error(f"Failed to process {file.name}: {str(e)}")
                 continue
 
-        logger.info("Processing complete.")
+        logger.info(f"Total unique chunks: {len(all_chunks)}")
+        return all_chunks
 
-    # ---------------------- STREAMING CHUNKS ---------------------- #
-    def _stream_chunks(
-        self, filename: str, chunk_size: int, chunk_overlap: int, batch_size: int
-    ) -> Generator[List[Document], None, None]:
-        documents = self._load_file(filename)
-        splitter = RecursiveCharacterTextSplitter(chunk_size=chunk_size, chunk_overlap=chunk_overlap)
+    def _process_file(self, file) -> List:
+        """
+        Streamlit-cloud-safe document processing.
+        Uses pdfplumber for PDFs and plain text loading for txt/md.
+        """
 
-        all_chunks = []
-        for doc in documents:
-            splits = splitter.split_documents([doc])
-            for split in splits:
-                # Approximate token count
-                if self._count_tokens(split.page_content) > MAX_MODEL_TOKENS:
-                    logger.warning(f"Chunk too large, splitting further: {split.metadata}")
-                    sub_splits = RecursiveCharacterTextSplitter(
-                        chunk_size=chunk_size // 2,
-                        chunk_overlap=chunk_overlap // 2
-                    ).split_documents([split])
-                    all_chunks.extend(sub_splits)
-                else:
-                    all_chunks.append(split)
-
-            while len(all_chunks) >= batch_size:
-                batch, all_chunks = all_chunks[:batch_size], all_chunks[batch_size:]
-                embeddings = self.embeddings.embed_documents([c.page_content for c in batch])
-                for c, e in zip(batch, embeddings):
-                    c.metadata["embedding"] = e
-                yield batch
-
-        if all_chunks:
-            embeddings = self.embeddings.embed_documents([c.page_content for c in all_chunks])
-            for c, e in zip(all_chunks, embeddings):
-                c.metadata["embedding"] = e
-            yield all_chunks
-
-    # ---------------------- FILE LOADING ---------------------- #
-    def _load_file(self, filename: str) -> List[Document]:
-        documents = []
-        if filename.endswith(".pdf"):
-            with pdfplumber.open(filename) as pdf:
-                for idx, page in enumerate(pdf.pages):
+        # ---------- PDF ----------
+        if file.name.endswith(".pdf"):
+            texts = []
+            with pdfplumber.open(file.name) as pdf:
+                for page in pdf.pages:
                     text = page.extract_text()
                     if text:
-                        documents.append(Document(
-                            page_content=text,
-                            metadata={"source": filename, "page": idx + 1}
-                        ))
-        elif filename.endswith((".txt", ".md")):
-            with open(filename, "r", encoding="utf-8", errors="ignore") as f:
+                        texts.append(text)
+
+            full_text = "\n\n".join(texts)
+            if not full_text:
+                return []
+
+            splitter = RecursiveCharacterTextSplitter(
+                chunk_size=settings.CHUNK_SIZE,
+                chunk_overlap=settings.CHUNK_OVERLAP,
+            )
+
+            docs = [Document(page_content=full_text, metadata={"source": file.name})]
+            return splitter.split_documents(docs)
+
+        # ---------- TEXT / MARKDOWN ----------
+        elif file.name.endswith((".txt", ".md")):
+            with open(file.name, "r", encoding="utf-8", errors="ignore") as f:
                 text = f.read()
-            documents.append(Document(page_content=text, metadata={"source": filename}))
+
+            if not text:
+                return []
+
+            if file.name.endswith(".md"):
+                splitter = MarkdownHeaderTextSplitter(
+                    chunk_size=settings.CHUNK_SIZE,
+                    chunk_overlap=settings.CHUNK_OVERLAP,
+                )
+            else:
+                splitter = RecursiveCharacterTextSplitter(
+                    chunk_size=settings.CHUNK_SIZE,
+                    chunk_overlap=settings.CHUNK_OVERLAP,
+                )
+
+            docs = [Document(page_content=text, metadata={"source": file.name})]
+            return splitter.split_documents(docs)
+
+        # ---------- UNSUPPORTED ----------
         else:
-            logger.warning(f"Skipping unsupported file type: {filename}")
-        return documents
+            logger.warning(f"Skipping unsupported file type: {file.name}")
+            return []
 
-    # ---------------------- APPROXIMATE TOKEN COUNT ---------------------- #
-    def _count_tokens(self, text: str) -> int:
-        """
-        Approximate token count:
-        - 1 token ≈ 0.75 words on average
-        """
-        words = text.split()
-        return int(len(words) / 0.75)
+    def _generate_hash(self, content: bytes) -> str:
+        return hashlib.sha256(content).hexdigest()
 
-    # ---------------------- UTILITIES ---------------------- #
-    def _file_hash(self, filename: str) -> str:
-        with open(filename, "rb") as f:
-            return hashlib.sha256(f.read()).hexdigest()
+    def _save_to_cache(self, chunks: List, cache_path: Path):
+        with open(cache_path, "wb") as f:
+            pickle.dump(
+                {
+                    "timestamp": datetime.now().timestamp(),
+                    "chunks": chunks,
+                },
+                f,
+            )
+
+    def _load_from_cache(self, cache_path: Path) -> List:
+        with open(cache_path, "rb") as f:
+            data = pickle.load(f)
+        return data["chunks"]
+
+    def _is_cache_valid(self, cache_path: Path) -> bool:
+        if not cache_path.exists():
+            return False
+
+        cache_age = datetime.now() - datetime.fromtimestamp(
+            cache_path.stat().st_mtime
+        )
+        return cache_age < timedelta(days=settings.CACHE_EXPIRE_DAYS)
