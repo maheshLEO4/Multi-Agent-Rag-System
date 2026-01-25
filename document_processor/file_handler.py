@@ -73,15 +73,8 @@ class DocumentProcessor:
                 logger.info(f"Processing file: {file.name}")
 
                 # Stream chunks and add to Qdrant
-                has_chunks = False
                 for chunk_batch in self._stream_chunks(file.name, chunk_size, chunk_overlap, batch_size):
-                    if not chunk_batch:
-                        continue
-                    has_chunks = True
                     self.vector_store.add_documents(chunk_batch)
-
-                if not has_chunks:
-                    logger.warning(f"No text chunks found in file: {file.name}")
 
             except Exception as e:
                 logger.error(f"Failed processing {file.name}: {str(e)}")
@@ -94,10 +87,6 @@ class DocumentProcessor:
         self, filename: str, chunk_size: int, chunk_overlap: int, batch_size: int
     ) -> Generator[List[Document], None, None]:
         documents = self._load_file(filename)
-        if not documents:
-            logger.warning(f"No documents loaded from file: {filename}")
-            return
-
         splitter = RecursiveCharacterTextSplitter(chunk_size=chunk_size, chunk_overlap=chunk_overlap)
 
         all_chunks = []
@@ -126,15 +115,12 @@ class DocumentProcessor:
             with pdfplumber.open(filename) as pdf:
                 for idx, page in enumerate(pdf.pages):
                     text = page.extract_text()
-                    if text and text.strip():
-                        documents.append(
-                            Document(page_content=text.strip(), metadata={"source": filename, "page": idx + 1})
-                        )
+                    if text:
+                        documents.append(Document(page_content=text, metadata={"source": filename, "page": idx + 1}))
         elif filename.endswith((".txt", ".md")):
             with open(filename, "r", encoding="utf-8", errors="ignore") as f:
                 text = f.read()
-            if text.strip():
-                documents.append(Document(page_content=text.strip(), metadata={"source": filename}))
+            documents.append(Document(page_content=text, metadata={"source": filename}))
         else:
             logger.warning(f"Skipping unsupported file type: {filename}")
         return documents
@@ -142,4 +128,4 @@ class DocumentProcessor:
     # ---------------------- UTILITIES ---------------------- #
     def _file_hash(self, filename: str) -> str:
         with open(filename, "rb") as f:
-            return hashlib.sha256(f.read()).hexdigest()
+            return hashlib.sha256(f.read()).hexdigest()   check these  
