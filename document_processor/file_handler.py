@@ -10,15 +10,13 @@ from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_qdrant import QdrantVectorStore
 from qdrant_client import QdrantClient
 from qdrant_client.models import Distance, VectorParams
-from tiktoken import encoding_for_model
 
 from config import constants
 from config.settings import settings
 from utils.logging import logger
 
 
-MAX_MODEL_TOKENS = 6000  # model limit per minute
-MODEL_NAME = "llama-3.1-8b-instant"
+MAX_MODEL_TOKENS = 6000  # approximate model limit per minute
 
 
 class DocumentProcessor:
@@ -45,9 +43,6 @@ class DocumentProcessor:
             collection_name=self.collection_name,
             embedding=self.embeddings,
         )
-
-        # Token encoder
-        self.encoder = encoding_for_model(MODEL_NAME)
 
     # ---------------------- QDRANT COLLECTION ---------------------- #
     def _ensure_collection(self):
@@ -100,10 +95,12 @@ class DocumentProcessor:
         for doc in documents:
             splits = splitter.split_documents([doc])
             for split in splits:
-                # Count tokens and skip chunks that exceed model limit
+                # Approximate token count
                 if self._count_tokens(split.page_content) > MAX_MODEL_TOKENS:
                     logger.warning(f"Chunk too large for model, splitting further: {split.metadata}")
-                    sub_splits = RecursiveCharacterTextSplitter(chunk_size=chunk_size // 2, chunk_overlap=chunk_overlap // 2).split_documents([split])
+                    sub_splits = RecursiveCharacterTextSplitter(
+                        chunk_size=chunk_size // 2, chunk_overlap=chunk_overlap // 2
+                    ).split_documents([split])
                     all_chunks.extend(sub_splits)
                 else:
                     all_chunks.append(split)
@@ -151,9 +148,15 @@ class DocumentProcessor:
             logger.warning(f"Skipping unsupported file type: {filename}")
         return documents
 
-    # ---------------------- TOKEN COUNT ---------------------- #
+    # ---------------------- APPROXIMATE TOKEN COUNT ---------------------- #
     def _count_tokens(self, text: str) -> int:
-        return len(self.encoder.encode(text))
+        """
+        Approximate token count:
+        - 1 token ≈ 0.75 words on average
+        - Conservative estimate to avoid exceeding model limits
+        """
+        words = text.split()
+        return int(len(words) / 0.75)
 
     # ---------------------- UTILITIES ---------------------- #
     def _file_hash(self, filename: str) -> str:
