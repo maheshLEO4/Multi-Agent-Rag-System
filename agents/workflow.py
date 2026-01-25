@@ -1,5 +1,5 @@
 from langgraph.graph import StateGraph, END
-from typing import TypedDict, List, Dict, Any
+from typing import TypedDict, List, Any, Dict
 from langchain_core.documents import Document
 import logging
 
@@ -8,7 +8,6 @@ from .verification_agent import VerificationAgent
 from .relevance_checker import RelevanceChecker
 
 logger = logging.getLogger(__name__)
-
 
 # ---------------------------
 # Agent State Definition
@@ -19,8 +18,7 @@ class AgentState(TypedDict):
     draft_answer: str
     verification_report: str
     is_relevant: bool
-    retriever: Any  # 🔥 Generic to support custom hybrid retrievers
-
+    retriever: Any  # Generic to support custom retrievers
 
 # ---------------------------
 # Workflow Class
@@ -98,12 +96,16 @@ class AgentWorkflow:
     # Full Pipeline Entry
     # ---------------------------
     def full_pipeline(self, question: str, retriever: Any):
+        """
+        Run the full agent workflow.
+        retriever should be a LangChain retriever or a wrapper
+        around QdrantVectorStore that supports `get_relevant_documents`.
+        """
         try:
             logger.info(f"Running pipeline for question: {question}")
 
-            # 🔥 Always use invoke() (LangChain 1.x standard)
-            documents = retriever.invoke(question)
-
+            # 🔹 Corrected: use get_relevant_documents instead of invoke
+            documents = retriever.get_relevant_documents(question)
             logger.info(f"Retrieved {len(documents)} documents")
 
             initial_state: AgentState = {
