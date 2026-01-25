@@ -8,7 +8,7 @@ from document_processor.file_handler import DocumentProcessor
 from retriever.builder import RetrieverBuilder
 from utils.logging import logger
 from langchain_huggingface import HuggingFaceEmbeddings
-from agent_workflow.workflow import AgentWorkflow  # import your workflow
+from agents.workflow import AgentWorkflow  # import your workflow
 
 # ---------------------------
 # Initialize components (cached)
