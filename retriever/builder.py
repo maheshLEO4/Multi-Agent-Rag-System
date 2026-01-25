@@ -86,4 +86,4 @@ class RetrieverBuilder:
 
         except Exception as e:
             logger.exception("Failed to build hybrid retriever")
-            raise e    find erroe 
+            raise e    
