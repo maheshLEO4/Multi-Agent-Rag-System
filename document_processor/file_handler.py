@@ -128,4 +128,4 @@ class DocumentProcessor:
     # ---------------------- UTILITIES ---------------------- #
     def _file_hash(self, filename: str) -> str:
         with open(filename, "rb") as f:
-            return hashlib.sha256(f.read()).hexdigest()   check these  
+            return hashlib.sha256(f.read()).hexdigest()    
