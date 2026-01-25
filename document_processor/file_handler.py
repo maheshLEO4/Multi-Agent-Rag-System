@@ -10,10 +10,15 @@ from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_qdrant import QdrantVectorStore
 from qdrant_client import QdrantClient
 from qdrant_client.models import Distance, VectorParams
+from tiktoken import encoding_for_model
 
 from config import constants
 from config.settings import settings
 from utils.logging import logger
+
+
+MAX_MODEL_TOKENS = 6000  # model limit per minute
+MODEL_NAME = "llama-3.1-8b-instant"
 
 
 class DocumentProcessor:
@@ -41,6 +46,9 @@ class DocumentProcessor:
             embedding=self.embeddings,
         )
 
+        # Token encoder
+        self.encoder = encoding_for_model(MODEL_NAME)
+
     # ---------------------- QDRANT COLLECTION ---------------------- #
     def _ensure_collection(self):
         try:
@@ -62,9 +70,9 @@ class DocumentProcessor:
 
     # ---------------------- STREAMING PROCESS ---------------------- #
     def process(
-        self, files: List, batch_size: int = 32, chunk_size: int = 1200, chunk_overlap: int = 100
+        self, files: List, batch_size: int = 16, chunk_size: int = 800, chunk_overlap: int = 50
     ):
-        """Process files and stream chunks directly into Qdrant."""
+        """Process files and stream chunks safely into Qdrant."""
         self.validate_files(files)
 
         for file in files:
@@ -72,7 +80,6 @@ class DocumentProcessor:
                 file_hash = self._file_hash(file.name)
                 logger.info(f"Processing file: {file.name}")
 
-                # Stream chunks and add to Qdrant
                 for chunk_batch in self._stream_chunks(file.name, chunk_size, chunk_overlap, batch_size):
                     self.vector_store.add_documents(chunk_batch)
 
@@ -92,11 +99,17 @@ class DocumentProcessor:
         all_chunks = []
         for doc in documents:
             splits = splitter.split_documents([doc])
-            all_chunks.extend(splits)
+            for split in splits:
+                # Count tokens and skip chunks that exceed model limit
+                if self._count_tokens(split.page_content) > MAX_MODEL_TOKENS:
+                    logger.warning(f"Chunk too large for model, splitting further: {split.metadata}")
+                    sub_splits = RecursiveCharacterTextSplitter(chunk_size=chunk_size // 2, chunk_overlap=chunk_overlap // 2).split_documents([split])
+                    all_chunks.extend(sub_splits)
+                else:
+                    all_chunks.append(split)
 
             while len(all_chunks) >= batch_size:
                 batch, all_chunks = all_chunks[:batch_size], all_chunks[batch_size:]
-                # Embed batch
                 embeddings = self.embeddings.embed_documents([c.page_content for c in batch])
                 for c, e in zip(batch, embeddings):
                     c.metadata["embedding"] = e
@@ -109,14 +122,27 @@ class DocumentProcessor:
             yield all_chunks
 
     # ---------------------- FILE LOADING ---------------------- #
-    def _load_file(self, filename: str) -> List[Document]:
+    def _load_file(self, filename: str, pages_per_chunk: int = 5) -> List[Document]:
         documents = []
         if filename.endswith(".pdf"):
             with pdfplumber.open(filename) as pdf:
-                for idx, page in enumerate(pdf.pages):
-                    text = page.extract_text()
-                    if text:
-                        documents.append(Document(page_content=text, metadata={"source": filename, "page": idx + 1}))
+                total_pages = len(pdf.pages)
+                for i in range(0, total_pages, pages_per_chunk):
+                    text = ""
+                    for page in pdf.pages[i:i+pages_per_chunk]:
+                        page_text = page.extract_text()
+                        if page_text:
+                            text += page_text + "\n"
+                    if text.strip():
+                        documents.append(
+                            Document(
+                                page_content=text,
+                                metadata={
+                                    "source": filename,
+                                    "pages": f"{i+1}-{min(i+pages_per_chunk,total_pages)}",
+                                },
+                            )
+                        )
         elif filename.endswith((".txt", ".md")):
             with open(filename, "r", encoding="utf-8", errors="ignore") as f:
                 text = f.read()
@@ -125,7 +151,11 @@ class DocumentProcessor:
             logger.warning(f"Skipping unsupported file type: {filename}")
         return documents
 
+    # ---------------------- TOKEN COUNT ---------------------- #
+    def _count_tokens(self, text: str) -> int:
+        return len(self.encoder.encode(text))
+
     # ---------------------- UTILITIES ---------------------- #
     def _file_hash(self, filename: str) -> str:
         with open(filename, "rb") as f:
-            return hashlib.sha256(f.read()).hexdigest()    
+            return hashlib.sha256(f.read()).hexdigest()
