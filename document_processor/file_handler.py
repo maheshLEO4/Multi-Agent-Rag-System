@@ -1,9 +1,8 @@
 import os
 import hashlib
 from pathlib import Path
-from typing import List, Generator, Union, IO
+from typing import List, Generator
 
-import logging
 import pdfplumber
 from langchain_core.documents import Document
 from langchain_text_splitters import RecursiveCharacterTextSplitter
@@ -15,9 +14,6 @@ from qdrant_client.models import Distance, VectorParams
 from config import constants
 from config.settings import settings
 from utils.logging import logger
-
-# Suppress pdfminer warnings
-logging.getLogger("pdfminer").setLevel(logging.ERROR)
 
 
 class DocumentProcessor:
@@ -57,11 +53,8 @@ class DocumentProcessor:
             )
 
     # ---------------------- FILE VALIDATION ---------------------- #
-    def validate_files(self, files: List[Union[IO, Path]]):
-        total_size = sum(
-            file.size if hasattr(file, "size") else os.path.getsize(file.name if hasattr(file, "name") else file)
-            for file in files
-        )
+    def validate_files(self, files: List):
+        total_size = sum(os.path.getsize(f.name) for f in files)
         if total_size > constants.MAX_TOTAL_SIZE:
             raise ValueError(
                 f"Total size exceeds {constants.MAX_TOTAL_SIZE // 1024 // 1024} MB"
@@ -69,51 +62,52 @@ class DocumentProcessor:
 
     # ---------------------- STREAMING PROCESS ---------------------- #
     def process(
-        self, files: List[Union[IO, Path]], batch_size: int = 32, chunk_size: int = 1200, chunk_overlap: int = 100
+        self, files: List, batch_size: int = 32, chunk_size: int = 1200, chunk_overlap: int = 100
     ):
         """Process files and stream chunks directly into Qdrant."""
         self.validate_files(files)
 
         for file in files:
             try:
-                # Ensure file-like object
-                if isinstance(file, Path):
-                    file = open(file, "rb")
-
-                file_hash = self._file_hash(file)
-                logger.info(f"Processing file: {getattr(file, 'name', 'unknown_file')}")
+                file_hash = self._file_hash(file.name)
+                logger.info(f"Processing file: {file.name}")
 
                 # Stream chunks and add to Qdrant
-                for chunk_batch in self._stream_chunks(file, chunk_size, chunk_overlap, batch_size):
-                    if chunk_batch:
-                        self.vector_store.add_documents(chunk_batch)
+                has_chunks = False
+                for chunk_batch in self._stream_chunks(file.name, chunk_size, chunk_overlap, batch_size):
+                    if not chunk_batch:
+                        continue
+                    has_chunks = True
+                    self.vector_store.add_documents(chunk_batch)
+
+                if not has_chunks:
+                    logger.warning(f"No text chunks found in file: {file.name}")
 
             except Exception as e:
-                logger.error(f"Failed processing {getattr(file, 'name', 'unknown_file')}: {str(e)}")
+                logger.error(f"Failed processing {file.name}: {str(e)}")
                 continue
-            finally:
-                if isinstance(file, IO):
-                    file.close()
 
         logger.info("Processing complete.")
 
     # ---------------------- STREAMING CHUNKS ---------------------- #
     def _stream_chunks(
-        self, file: IO, chunk_size: int, chunk_overlap: int, batch_size: int
+        self, filename: str, chunk_size: int, chunk_overlap: int, batch_size: int
     ) -> Generator[List[Document], None, None]:
-        documents = self._load_file(file)
+        documents = self._load_file(filename)
         if not documents:
+            logger.warning(f"No documents loaded from file: {filename}")
             return
 
         splitter = RecursiveCharacterTextSplitter(chunk_size=chunk_size, chunk_overlap=chunk_overlap)
-        all_chunks = []
 
+        all_chunks = []
         for doc in documents:
             splits = splitter.split_documents([doc])
             all_chunks.extend(splits)
 
             while len(all_chunks) >= batch_size:
                 batch, all_chunks = all_chunks[:batch_size], all_chunks[batch_size:]
+                # Embed batch
                 embeddings = self.embeddings.embed_documents([c.page_content for c in batch])
                 for c, e in zip(batch, embeddings):
                     c.metadata["embedding"] = e
@@ -126,38 +120,26 @@ class DocumentProcessor:
             yield all_chunks
 
     # ---------------------- FILE LOADING ---------------------- #
-    def _load_file(self, file: IO) -> List[Document]:
+    def _load_file(self, filename: str) -> List[Document]:
         documents = []
-        filename = getattr(file, "name", "unknown_file")
-
-        try:
-            if filename.endswith(".pdf"):
-                file.seek(0)
-                with pdfplumber.open(file) as pdf:
-                    for idx, page in enumerate(pdf.pages):
-                        text = page.extract_text()
-                        if text:
-                            documents.append(
-                                Document(page_content=text, metadata={"source": filename, "page": idx + 1})
-                            )
-            elif filename.endswith((".txt", ".md")):
-                file.seek(0)
-                text = file.read().decode("utf-8", errors="ignore")
-                documents.append(Document(page_content=text, metadata={"source": filename}))
-            else:
-                logger.warning(f"Skipping unsupported file type: {filename}")
-        except Exception as e:
-            logger.error(f"Error loading file {filename}: {str(e)}")
-
+        if filename.endswith(".pdf"):
+            with pdfplumber.open(filename) as pdf:
+                for idx, page in enumerate(pdf.pages):
+                    text = page.extract_text()
+                    if text and text.strip():
+                        documents.append(
+                            Document(page_content=text.strip(), metadata={"source": filename, "page": idx + 1})
+                        )
+        elif filename.endswith((".txt", ".md")):
+            with open(filename, "r", encoding="utf-8", errors="ignore") as f:
+                text = f.read()
+            if text.strip():
+                documents.append(Document(page_content=text.strip(), metadata={"source": filename}))
+        else:
+            logger.warning(f"Skipping unsupported file type: {filename}")
         return documents
 
     # ---------------------- UTILITIES ---------------------- #
-    def _file_hash(self, file: IO) -> str:
-        try:
-            file.seek(0)
-            hash_val = hashlib.sha256(file.read()).hexdigest()
-            file.seek(0)
-            return hash_val
-        except Exception as e:
-            logger.error(f"Error hashing file {getattr(file, 'name', 'unknown_file')}: {str(e)}")
-            return "unknown_hash"
+    def _file_hash(self, filename: str) -> str:
+        with open(filename, "rb") as f:
+            return hashlib.sha256(f.read()).hexdigest()
