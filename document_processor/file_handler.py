@@ -16,8 +16,7 @@ from config.settings import settings
 from utils.logging import logger
 
 
-MAX_MODEL_TOKENS = 6000  # approximate model limit per minute
-
+MAX_MODEL_TOKENS = 6000  # approximate safe token limit for LLM
 
 class DocumentProcessor:
     def __init__(self, embeddings: HuggingFaceEmbeddings):
@@ -65,9 +64,9 @@ class DocumentProcessor:
 
     # ---------------------- STREAMING PROCESS ---------------------- #
     def process(
-        self, files: List, batch_size: int = 16, chunk_size: int = 800, chunk_overlap: int = 50
+        self, files: List, batch_size: int = 32, chunk_size: int = 1200, chunk_overlap: int = 100
     ):
-        """Process files and stream chunks safely into Qdrant."""
+        """Process files and stream chunks directly into Qdrant."""
         self.validate_files(files)
 
         for file in files:
@@ -75,6 +74,7 @@ class DocumentProcessor:
                 file_hash = self._file_hash(file.name)
                 logger.info(f"Processing file: {file.name}")
 
+                # Stream chunks and add to Qdrant
                 for chunk_batch in self._stream_chunks(file.name, chunk_size, chunk_overlap, batch_size):
                     self.vector_store.add_documents(chunk_batch)
 
@@ -97,9 +97,10 @@ class DocumentProcessor:
             for split in splits:
                 # Approximate token count
                 if self._count_tokens(split.page_content) > MAX_MODEL_TOKENS:
-                    logger.warning(f"Chunk too large for model, splitting further: {split.metadata}")
+                    logger.warning(f"Chunk too large, splitting further: {split.metadata}")
                     sub_splits = RecursiveCharacterTextSplitter(
-                        chunk_size=chunk_size // 2, chunk_overlap=chunk_overlap // 2
+                        chunk_size=chunk_size // 2,
+                        chunk_overlap=chunk_overlap // 2
                     ).split_documents([split])
                     all_chunks.extend(sub_splits)
                 else:
@@ -119,27 +120,17 @@ class DocumentProcessor:
             yield all_chunks
 
     # ---------------------- FILE LOADING ---------------------- #
-    def _load_file(self, filename: str, pages_per_chunk: int = 5) -> List[Document]:
+    def _load_file(self, filename: str) -> List[Document]:
         documents = []
         if filename.endswith(".pdf"):
             with pdfplumber.open(filename) as pdf:
-                total_pages = len(pdf.pages)
-                for i in range(0, total_pages, pages_per_chunk):
-                    text = ""
-                    for page in pdf.pages[i:i+pages_per_chunk]:
-                        page_text = page.extract_text()
-                        if page_text:
-                            text += page_text + "\n"
-                    if text.strip():
-                        documents.append(
-                            Document(
-                                page_content=text,
-                                metadata={
-                                    "source": filename,
-                                    "pages": f"{i+1}-{min(i+pages_per_chunk,total_pages)}",
-                                },
-                            )
-                        )
+                for idx, page in enumerate(pdf.pages):
+                    text = page.extract_text()
+                    if text:
+                        documents.append(Document(
+                            page_content=text,
+                            metadata={"source": filename, "page": idx + 1}
+                        ))
         elif filename.endswith((".txt", ".md")):
             with open(filename, "r", encoding="utf-8", errors="ignore") as f:
                 text = f.read()
@@ -153,7 +144,6 @@ class DocumentProcessor:
         """
         Approximate token count:
         - 1 token ≈ 0.75 words on average
-        - Conservative estimate to avoid exceeding model limits
         """
         words = text.split()
         return int(len(words) / 0.75)
