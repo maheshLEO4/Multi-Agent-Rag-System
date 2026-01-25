@@ -1,8 +1,9 @@
-import os
-import logging
 from typing import List
+import logging
+import os
 
 from langchain_huggingface import HuggingFaceEmbeddings
+# FIX: Use the new dedicated Qdrant integration
 from langchain_qdrant import QdrantVectorStore
 from langchain_community.retrievers import BM25Retriever
 from langchain_core.retrievers import BaseRetriever
@@ -13,7 +14,6 @@ from qdrant_client import QdrantClient
 from qdrant_client.models import Distance, VectorParams
 
 logger = logging.getLogger(__name__)
-
 
 class HybridRetriever(BaseRetriever):
     """Hybrid retriever combining multiple retrievers safely."""
@@ -26,17 +26,18 @@ class HybridRetriever(BaseRetriever):
         seen = set()
 
         for retriever in self.retrievers:
+            # Use invoke to let LangChain handle internal run_manager logic
             results = retriever.invoke(
-                query,
+                query, 
                 config={"callbacks": run_manager.get_child() if run_manager else None}
             )
+
             for doc in results:
                 doc_id = hash(doc.page_content)
                 if doc_id not in seen:
                     seen.add(doc_id)
                     docs.append(doc)
         return docs
-
 
 class RetrieverBuilder:
     def __init__(self):
@@ -48,7 +49,7 @@ class RetrieverBuilder:
 
         self.url = os.getenv("QDRANT_URL", "http://localhost:6333")
         self.api_key = os.getenv("QDRANT_API_KEY")
-
+        
         self.qdrant_client = QdrantClient(
             url=self.url,
             api_key=self.api_key,
@@ -61,7 +62,6 @@ class RetrieverBuilder:
         try:
             self.qdrant_client.get_collection(self.collection_name)
         except Exception:
-            logger.info("Creating Qdrant collection...")
             self.qdrant_client.create_collection(
                 collection_name=self.collection_name,
                 vectors_config=VectorParams(size=384, distance=Distance.COSINE),
@@ -69,17 +69,14 @@ class RetrieverBuilder:
 
     def build_hybrid_retriever(self, docs: List[Document]) -> BaseRetriever:
         try:
-            if docs is None or len(docs) == 0:
-                logger.error("No documents provided to build the hybrid retriever!")
-                raise ValueError("Document list is empty or None")
-
+            # Use the new QdrantVectorStore class
             vector_store = QdrantVectorStore(
                 client=self.qdrant_client,
                 collection_name=self.collection_name,
                 embedding=self.embeddings,
             )
-
-            # Add documents safely
+            
+            # Clean collection and add new docs
             vector_store.add_documents(docs)
 
             bm25 = BM25Retriever.from_documents(docs)
@@ -89,4 +86,4 @@ class RetrieverBuilder:
 
         except Exception as e:
             logger.exception("Failed to build hybrid retriever")
-            raise e
+            raise e    find erroe 
