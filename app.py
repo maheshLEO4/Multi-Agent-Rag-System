@@ -2,7 +2,6 @@ import streamlit as st
 import hashlib
 from pathlib import Path
 from typing import List
-import logging
 import os
 
 from document_processor.file_handler import DocumentProcessor
@@ -24,9 +23,8 @@ def initialize_components():
     )
 
     processor = DocumentProcessor(embeddings=embeddings)
-    retriever_builder = RetrieverBuilder()  # use default constructor
     workflow = AgentWorkflow()
-    return processor, retriever_builder, workflow
+    return processor, workflow
 
 # ---------------------------
 # Helper functions
@@ -67,9 +65,8 @@ def main():
     # --- 2. COMPONENT INITIALIZATION ---
     if 'processor' not in st.session_state:
         try:
-            processor, retriever_builder, workflow = initialize_components()
+            processor, workflow = initialize_components()
             st.session_state.processor = processor
-            st.session_state.retriever_builder = retriever_builder
             st.session_state.workflow = workflow
         except Exception as e:
             st.error(f"Failed to initialize AI components: {e}")
@@ -98,18 +95,18 @@ def main():
             st.session_state.uploaded_files = temp_files
             st.success(f"Registered {len(uploaded_files)} files")
 
-            # --- STREAMED PROCESSING ON UPLOAD ---
+            # --- PROCESS DOCUMENTS INTO QDRANT ---
             current_hashes = _get_file_hashes(temp_files)
             if st.session_state.retriever is None or current_hashes != st.session_state.file_hashes:
-                with st.spinner("🤖 Processing documents and building retriever..."):
-                    chunks = st.session_state.processor.process(temp_files)
+                with st.spinner("🤖 Processing documents and updating retriever..."):
                     try:
-                        retriever = st.session_state.retriever_builder.build_hybrid_retriever(chunks)
-                        st.session_state.retriever = retriever
+                        st.session_state.processor.process(temp_files)
+                        # Use processor's vector store directly
+                        st.session_state.retriever = st.session_state.processor.vector_store
                         st.session_state.file_hashes = current_hashes
-                        st.success(f"Processed {len(chunks)} chunks and ready for chat.")
+                        st.success("Documents processed and retriever ready.")
                     except Exception as e:
-                        st.error(f"Failed to build retriever: {e}")
+                        st.error(f"Failed to process documents: {e}")
                         st.session_state.retriever = None
 
         # Quick Examples
