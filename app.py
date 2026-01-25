@@ -10,7 +10,6 @@ from retriever.builder import RetrieverBuilder
 from agents.workflow import AgentWorkflow
 from utils.logging import logger
 from langchain_huggingface import HuggingFaceEmbeddings
-from qdrant_client import QdrantClient
 
 # ---------------------------
 # Initialize components (cached)
@@ -25,18 +24,7 @@ def initialize_components():
     )
 
     processor = DocumentProcessor(embeddings=embeddings)
-
-    # Initialize Qdrant client safely
-    try:
-        qdrant_client = QdrantClient(
-            url=os.getenv("QDRANT_URL", "http://localhost:6333"),
-            api_key=os.getenv("QDRANT_API_KEY", None)
-        )
-        retriever_builder = RetrieverBuilder(qdrant_client=qdrant_client)
-    except Exception as e:
-        st.warning(f"⚠️ Could not connect to Qdrant: {e}")
-        retriever_builder = RetrieverBuilder(qdrant_client=None)
-
+    retriever_builder = RetrieverBuilder()  # use default constructor
     workflow = AgentWorkflow()
     return processor, retriever_builder, workflow
 
