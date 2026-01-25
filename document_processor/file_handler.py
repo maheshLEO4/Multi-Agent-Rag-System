@@ -3,6 +3,7 @@ import hashlib
 from pathlib import Path
 from typing import List, Generator
 
+import logging
 import pdfplumber
 from langchain_core.documents import Document
 from langchain_text_splitters import RecursiveCharacterTextSplitter
@@ -14,6 +15,9 @@ from qdrant_client.models import Distance, VectorParams
 from config import constants
 from config.settings import settings
 from utils.logging import logger
+
+# Suppress pdfminer warnings
+logging.getLogger("pdfminer").setLevel(logging.ERROR)
 
 
 class DocumentProcessor:
@@ -54,7 +58,7 @@ class DocumentProcessor:
 
     # ---------------------- FILE VALIDATION ---------------------- #
     def validate_files(self, files: List):
-        total_size = sum(os.path.getsize(f.name) for f in files)
+        total_size = sum(file.size if hasattr(file, "size") else os.path.getsize(file.name) for file in files)
         if total_size > constants.MAX_TOTAL_SIZE:
             raise ValueError(
                 f"Total size exceeds {constants.MAX_TOTAL_SIZE // 1024 // 1024} MB"
@@ -69,24 +73,24 @@ class DocumentProcessor:
 
         for file in files:
             try:
-                file_hash = self._file_hash(file.name)
-                logger.info(f"Processing file: {file.name}")
+                file_hash = self._file_hash(file)
+                logger.info(f"Processing file: {getattr(file, 'name', 'unknown_file')}")
 
                 # Stream chunks and add to Qdrant
-                for chunk_batch in self._stream_chunks(file.name, chunk_size, chunk_overlap, batch_size):
+                for chunk_batch in self._stream_chunks(file, chunk_size, chunk_overlap, batch_size):
                     self.vector_store.add_documents(chunk_batch)
 
             except Exception as e:
-                logger.error(f"Failed processing {file.name}: {str(e)}")
+                logger.error(f"Failed processing {getattr(file, 'name', 'unknown_file')}: {str(e)}")
                 continue
 
         logger.info("Processing complete.")
 
     # ---------------------- STREAMING CHUNKS ---------------------- #
     def _stream_chunks(
-        self, filename: str, chunk_size: int, chunk_overlap: int, batch_size: int
+        self, file, chunk_size: int, chunk_overlap: int, batch_size: int
     ) -> Generator[List[Document], None, None]:
-        documents = self._load_file(filename)
+        documents = self._load_file(file)
         splitter = RecursiveCharacterTextSplitter(chunk_size=chunk_size, chunk_overlap=chunk_overlap)
 
         all_chunks = []
@@ -109,23 +113,31 @@ class DocumentProcessor:
             yield all_chunks
 
     # ---------------------- FILE LOADING ---------------------- #
-    def _load_file(self, filename: str) -> List[Document]:
+    def _load_file(self, file) -> List[Document]:
         documents = []
+        filename = getattr(file, "name", "unknown_file")
+
         if filename.endswith(".pdf"):
-            with pdfplumber.open(filename) as pdf:
+            file.seek(0)
+            with pdfplumber.open(file) as pdf:
                 for idx, page in enumerate(pdf.pages):
                     text = page.extract_text()
                     if text:
-                        documents.append(Document(page_content=text, metadata={"source": filename, "page": idx + 1}))
+                        documents.append(
+                            Document(page_content=text, metadata={"source": filename, "page": idx + 1})
+                        )
         elif filename.endswith((".txt", ".md")):
-            with open(filename, "r", encoding="utf-8", errors="ignore") as f:
-                text = f.read()
+            file.seek(0)
+            text = file.read().decode("utf-8", errors="ignore")
             documents.append(Document(page_content=text, metadata={"source": filename}))
         else:
             logger.warning(f"Skipping unsupported file type: {filename}")
+
         return documents
 
     # ---------------------- UTILITIES ---------------------- #
-    def _file_hash(self, filename: str) -> str:
-        with open(filename, "rb") as f:
-            return hashlib.sha256(f.read()).hexdigest()
+    def _file_hash(self, file) -> str:
+        file.seek(0)
+        hash_val = hashlib.sha256(file.read()).hexdigest()
+        file.seek(0)
+        return hash_val
