@@ -10,6 +10,7 @@ from retriever.builder import RetrieverBuilder
 from agents.workflow import AgentWorkflow
 from utils.logging import logger
 from langchain_huggingface import HuggingFaceEmbeddings
+from qdrant_client import QdrantClient
 
 # ---------------------------
 # Initialize components (cached)
@@ -24,7 +25,18 @@ def initialize_components():
     )
 
     processor = DocumentProcessor(embeddings=embeddings)
-    retriever_builder = RetrieverBuilder()
+
+    # Initialize Qdrant client safely
+    try:
+        qdrant_client = QdrantClient(
+            url=os.getenv("QDRANT_URL", "http://localhost:6333"),
+            api_key=os.getenv("QDRANT_API_KEY", None)
+        )
+        retriever_builder = RetrieverBuilder(qdrant_client=qdrant_client)
+    except Exception as e:
+        st.warning(f"⚠️ Could not connect to Qdrant: {e}")
+        retriever_builder = RetrieverBuilder(qdrant_client=None)
+
     workflow = AgentWorkflow()
     return processor, retriever_builder, workflow
 
@@ -103,10 +115,14 @@ def main():
             if st.session_state.retriever is None or current_hashes != st.session_state.file_hashes:
                 with st.spinner("🤖 Processing documents and building retriever..."):
                     chunks = st.session_state.processor.process(temp_files)
-                    retriever = st.session_state.retriever_builder.build_hybrid_retriever(chunks)
-                    st.session_state.retriever = retriever
-                    st.session_state.file_hashes = current_hashes
-                    st.success(f"Processed {len(chunks)} chunks and ready for chat.")
+                    try:
+                        retriever = st.session_state.retriever_builder.build_hybrid_retriever(chunks)
+                        st.session_state.retriever = retriever
+                        st.session_state.file_hashes = current_hashes
+                        st.success(f"Processed {len(chunks)} chunks and ready for chat.")
+                    except Exception as e:
+                        st.error(f"Failed to build retriever: {e}")
+                        st.session_state.retriever = None
 
         # Quick Examples
         st.markdown("---")
